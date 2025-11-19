@@ -3,6 +3,7 @@ streamlit
 
 pandas
 
+flask
 
 SQLAlchemy
 
