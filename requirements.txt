@@ -11,3 +11,7 @@ SQLAlchemy
 werkzeug
 
 flask_sqlalchemy
+streamlit==1.31.0
+sqlalchemy==2.0.25
+pandas==2.2.0
+werkzeug==3.0.1
