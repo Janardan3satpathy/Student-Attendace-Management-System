@@ -9,3 +9,5 @@ SQLAlchemy
 
 
 werkzeug
+
+flask_sqlalchemy
