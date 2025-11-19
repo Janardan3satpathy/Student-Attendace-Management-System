@@ -1,102 +1,147 @@
+import streamlit as st
 import json
 import random
 import string
-import csv
-from io import StringIO
+import pandas as pd
 from datetime import datetime, timedelta
-from flask import Flask, request, redirect, url_for, render_template_string, flash, session, make_response
-from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import create_engine, Column, Integer, String, Text, Date, DateTime, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
 from werkzeug.security import generate_password_hash, check_password_hash
+import os
 
-# --- 1. CONFIGURATION AND INITIALIZATION ---
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'a_very_secure_secret_key_for_sessions'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///attendify.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+# Page configuration
+st.set_page_config(
+    page_title="Sha-Shib Attendify",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- 2. DATABASE MODELS ---
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: #007bff;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .alert-box {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border-left: 4px solid #ef4444;
+        background-color: #fef2f2;
+        color: #ef4444;
+    }
+    .success-box {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border-left: 4px solid #10b981;
+        background-color: #f0fdf4;
+        color: #10b981;
+    }
+    .info-card {
+        background-color: #f8fafc;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        border: 1px solid #e2e8f0;
+        margin-bottom: 1rem;
+    }
+    .metric-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        color: white;
+        text-align: center;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-class User(db.Model):
+# Database Setup
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'user'
+    
     # Role definitions
     ADMIN, TEACHER, STUDENT = 1, 2, 3
-
-    id = db.Column(db.Integer, primary_key=True)
-    full_name = db.Column(db.String(100), nullable=False)
-    enrollment_number = db.Column(db.String(20), unique=True, nullable=False) # Used for login
-    password_hash = db.Column(db.String(128), nullable=False)
-    role = db.Column(db.Integer, nullable=False) # 1:Admin, 2:Teacher, 3:Student
     
-    # Student specific details
-    course = db.Column(db.String(50))
-    branch = db.Column(db.String(50))
-    batch = db.Column(db.Integer)
+    id = Column(Integer, primary_key=True)
+    full_name = Column(String(100), nullable=False)
+    enrollment_number = Column(String(20), unique=True, nullable=False)
+    password_hash = Column(String(128), nullable=False)
+    role = Column(Integer, nullable=False)
     
-    # Personal details (for Students)
-    fathers_name = db.Column(db.String(100))
-    mothers_name = db.Column(db.String(100))
-    dob = db.Column(db.Date)
-    blood_group = db.Column(db.String(10))
-    address = db.Column(db.String(255))
-    district = db.Column(db.String(50))
-    state = db.Column(db.String(50))
-    pin_code = db.Column(db.String(10))
-    contact_no = db.Column(db.String(15))
+    # Student specific
+    course = Column(String(50))
+    branch = Column(String(50))
+    batch = Column(Integer)
     
-    # Biometric Simulation (5 fingerprint placeholders)
-    fingerprint_data = db.Column(db.Text) # Stored as JSON string of 5 simulated entries
-
-    # Teacher specific details (Assuming enrollment_number is also used as staff ID)
-    subject_id = db.Column(db.Integer, db.ForeignKey('subject.id'), nullable=True)
-    subject = db.relationship('Subject', backref='teachers')
-
+    # Personal details
+    fathers_name = Column(String(100))
+    mothers_name = Column(String(100))
+    dob = Column(Date)
+    blood_group = Column(String(10))
+    address = Column(String(255))
+    district = Column(String(50))
+    state = Column(String(50))
+    pin_code = Column(String(10))
+    contact_no = Column(String(15))
+    
+    fingerprint_data = Column(Text)
+    
+    # Teacher specific
+    subject_id = Column(Integer, ForeignKey('subject.id'), nullable=True)
+    subject = relationship('Subject', backref='teachers')
+    
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
-
+    
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-class Subject(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    course = db.Column(db.String(50), nullable=False)
-    branch = db.Column(db.String(50), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    code = db.Column(db.String(20), unique=True, nullable=False)
-    semester = db.Column(db.Integer, nullable=False) # 1 to 8 (4 years, 2 semesters/year)
+class Subject(Base):
+    __tablename__ = 'subject'
+    
+    id = Column(Integer, primary_key=True)
+    course = Column(String(50), nullable=False)
+    branch = Column(String(50), nullable=False)
+    name = Column(String(100), nullable=False)
+    code = Column(String(20), unique=True, nullable=False)
+    semester = Column(Integer, nullable=False)
 
-class Attendance(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    subject_id = db.Column(db.Integer, db.ForeignKey('subject.id'), nullable=False)
-    teacher_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    punch_in_time = db.Column(db.DateTime, nullable=False)
-    punch_out_time = db.Column(db.DateTime)
-    status = db.Column(db.String(10), default='Present') # Present, Late, Absent, etc.
+class Attendance(Base):
+    __tablename__ = 'attendance'
+    
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey('user.id'), nullable=False)
+    subject_id = Column(Integer, ForeignKey('subject.id'), nullable=False)
+    teacher_id = Column(Integer, ForeignKey('user.id'), nullable=False)
+    punch_in_time = Column(DateTime, nullable=False)
+    punch_out_time = Column(DateTime)
+    status = Column(String(10), default='Present')
+    
+    student = relationship('User', foreign_keys=[student_id], backref='student_attendance')
+    teacher = relationship('User', foreign_keys=[teacher_id], backref='teacher_records')
+    subject_rel = relationship('Subject', backref='subject_attendance')
 
-    student = db.relationship('User', foreign_keys=[student_id], backref='student_attendance')
-    teacher = db.relationship('User', foreign_keys=[teacher_id], backref='teacher_records')
-    subject_rel = db.relationship('Subject', backref='subject_attendance')
+# Initialize Database
+@st.cache_resource
+def init_database():
+    engine = create_engine('sqlite:///attendify.db', echo=False)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    return Session()
 
-# --- 3. HELPER FUNCTIONS AND DATA SEEDING ---
-
-def get_current_user():
-    user_id = session.get('user_id')
-    return User.query.get(user_id) if user_id else None
-
-def get_user_role_name(role_id):
-    if role_id == User.ADMIN: return 'Admin'
-    if role_id == User.TEACHER: return 'Teacher'
-    if role_id == User.STUDENT: return 'Student'
-    return 'Unknown'
-
-def generate_captcha():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-
-# FIX: Removed the deprecated @app.before_first_request decorator here.
-# The function is correctly called using `with app.app_context():` in the main block below.
-def create_db_and_seed():
-    db.create_all()
-    if not User.query.filter_by(role=User.ADMIN).first():
+def seed_database(session):
+    """Seed initial data if not exists"""
+    # Check if admin exists
+    admin = session.query(User).filter_by(role=User.ADMIN).first()
+    if not admin:
         admin = User(
             full_name='Super Admin',
             enrollment_number='ADMIN001',
@@ -104,32 +149,32 @@ def create_db_and_seed():
             fingerprint_data=json.dumps([f'Simulated Admin Finger {i}' for i in range(1, 6)])
         )
         admin.set_password('adminpass')
-        db.session.add(admin)
-        db.session.commit()
+        session.add(admin)
+        session.commit()
     
-    # Seed Courses and Subjects
-    if not Subject.query.first():
+    # Seed subjects
+    if session.query(Subject).count() == 0:
         branches = ['CSE', 'ECE', 'MECH', 'CIVIL']
         courses = ['B.Tech']
-        subjects_data = []
         for course in courses:
             for branch in branches:
                 for year in range(1, 5):
                     for semester in [1, 2]:
                         sem_num = (year - 1) * 2 + semester
-                        subjects_data.extend([
-                            (course, branch, f'{branch} - Subject A{sem_num}', f'SA{sem_num}{branch[:2]}', sem_num),
-                            (course, branch, f'{branch} - Subject B{sem_num}', f'SB{sem_num}{branch[:2]}', sem_num)
-                        ])
-        
-        for course, branch, name, code, sem in subjects_data:
-            db.session.add(Subject(course=course, branch=branch, name=name, code=code, semester=sem))
-        
-        db.session.commit()
-
-    # Seed a Teacher
-    if not User.query.filter_by(role=User.TEACHER).first():
-        subject = Subject.query.filter_by(name='CSE - Subject A1').first()
+                        for suffix in ['A', 'B']:
+                            subject = Subject(
+                                course=course,
+                                branch=branch,
+                                name=f'{branch} - Subject {suffix}{sem_num}',
+                                code=f'S{suffix}{sem_num}{branch[:2]}',
+                                semester=sem_num
+                            )
+                            session.add(subject)
+        session.commit()
+    
+    # Seed a teacher
+    if session.query(User).filter_by(role=User.TEACHER).count() == 0:
+        subject = session.query(Subject).filter_by(name='CSE - Subject A1').first()
         if subject:
             teacher = User(
                 full_name='Dr. Anjali Sharma',
@@ -139,11 +184,11 @@ def create_db_and_seed():
                 fingerprint_data=json.dumps([f'Simulated Teacher Finger {i}' for i in range(1, 6)])
             )
             teacher.set_password('teacherpass')
-            db.session.add(teacher)
-            db.session.commit()
-
-    # Seed a Student
-    if not User.query.filter_by(role=User.STUDENT).first():
+            session.add(teacher)
+            session.commit()
+    
+    # Seed a student
+    if session.query(User).filter_by(role=User.STUDENT).count() == 0:
         student = User(
             full_name='Priya Kumar',
             enrollment_number='STU2025001',
@@ -163,611 +208,219 @@ def create_db_and_seed():
             fingerprint_data=json.dumps([f'Simulated Student Finger {i}' for i in range(1, 6)])
         )
         student.set_password('studentpass')
-        db.session.add(student)
-        db.session.commit()
+        session.add(student)
+        session.commit()
 
-# --- 4. TEMPLATE STRINGS (INLINE HTML/CSS/JS) ---
+# Helper Functions
+def generate_captcha():
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-# Reusable Tailwind CSS components for aesthetics and responsiveness
-TAILWIND_HEADER = """
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-    /* Custom CSS for the required look */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
-    body { font-family: 'Inter', sans-serif; }
-    .title-banner {
-        color: #007bff; /* Bold Blue */
-        font-size: 2rem;
-        font-weight: 800;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .card {
-        background-color: white;
-        padding: 2.5rem;
-        border-radius: 1rem;
-        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-        width: 100%;
-        max-width: 448px; /* max-w-lg */
-    }
-    .alert-system {
-        background-color: #fef2f2; /* Red 100 */
-        border: 1px solid #fca5a5; /* Red 300 */
-        color: #ef4444; /* Red 500 */
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1.5rem;
-    }
-</style>
-"""
+def get_role_name(role_id):
+    if role_id == User.ADMIN: return 'Admin'
+    if role_id == User.TEACHER: return 'Teacher'
+    if role_id == User.STUDENT: return 'Student'
+    return 'Unknown'
 
-LOGIN_HTML = TAILWIND_HEADER + """
-<title>Login - Sha-Shib Attendify</title>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
-    <div class="card">
-        <h1 class="title-banner">WELCOME SHA-SHIB ATTENDEES</h1>
+# Initialize session state
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_id = None
+    st.session_state.user_role = None
+    st.session_state.captcha = generate_captcha()
+    st.session_state.page = 'login'
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                <div class="p-3 mb-4 text-sm text-{{ 'red' if category == 'error' else 'green' }}-700 bg-{{ 'red' if category == 'error' else 'green' }}-100 rounded-lg" role="alert">
-                    {{ message }}
-                </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
+# Initialize database
+session = init_database()
+seed_database(session)
 
-        <form method="POST" action="{{ url_for('login') }}" class="space-y-6">
-            <div class="space-y-2">
-                <label for="role" class="block text-sm font-medium text-gray-700">Login As</label>
-                <select name="role" id="role" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 shadow-sm">
-                    <option value="3">Student</option>
-                    <option value="2">Teacher</option>
-                    <option value="1">Admin</option>
-                </select>
-            </div>
-            <input type="text" name="enrollment_number" placeholder="Enrollment Number" required
-                class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-            <input type="password" name="password" placeholder="Password" required
-                class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
+# Main App Logic
+def login_page():
+    st.markdown('<h1 class="main-header">🎓 WELCOME SHA-SHIB ATTENDEES</h1>', unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        with st.form("login_form"):
+            st.subheader("Login to Your Account")
             
-            <div class="flex items-center space-x-4">
-                <input type="text" name="captcha_input" placeholder="Enter Captcha" required
-                    class="w-2/3 p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                <div class="w-1/3 p-3 bg-gray-200 rounded-lg text-center font-bold text-gray-800 select-none" id="captcha-display">{{ captcha }}</div>
-                <input type="hidden" id="captcha-value" name="captcha_value" value="{{ captcha }}" />
-            </div>
-
-            <div class="flex items-center justify-between">
-                <button type="submit"
-                    class="flex-1 mr-2 px-6 py-3 text-white bg-blue-600 rounded-lg font-semibold hover:bg-blue-700 transition duration-150 shadow-md">
-                    Login
-                </button>
-                <a href="{{ url_for('register_select') }}"
-                    class="flex-1 ml-2 text-center text-sm text-blue-600 hover:text-blue-800 font-medium">
-                    Register an account
-                </a>
-            </div>
-        </form>
-    </div>
-    <script>
-        // Simple JS to ensure the user doesn't cheat the captcha easily (though not secure)
-        document.querySelector('form').addEventListener('submit', function(e) {
-            const input = document.querySelector('input[name="captcha_input"]').value;
-            const value = document.getElementById('captcha-value').value;
-            if (input.toUpperCase() !== value.toUpperCase()) {
-                alert('Invalid Captcha. Please try again.');
-                e.preventDefault();
-            }
-        });
-    </script>
-</body>
-"""
-
-REGISTER_SELECT_HTML = TAILWIND_HEADER + """
-<title>Register - Sha-Shib Attendify</title>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
-    <div class="card">
-        <h1 class="title-banner text-xl">REGISTER AS</h1>
-        <div class="space-y-4">
-            <a href="{{ url_for('register', role_id=3) }}" class="block w-full text-center px-6 py-3 text-white bg-green-500 rounded-lg font-semibold hover:bg-green-600 transition duration-150 shadow-md">
-                Register as Student
-            </a>
-            <a href="{{ url_for('register', role_id=2) }}" class="block w-full text-center px-6 py-3 text-white bg-purple-500 rounded-lg font-semibold hover:bg-purple-600 transition duration-150 shadow-md">
-                Register as Teacher
-            </a>
-            <p class="mt-4 text-center text-sm">
-                Already have an account? <a href="{{ url_for('index') }}" class="text-blue-600 hover:underline">Go to Login</a>
-            </p>
-        </div>
-    </div>
-</body>
-"""
-
-REGISTRATION_FORM_HTML = TAILWIND_HEADER + """
-<title>Register - {{ role_name }}</title>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
-    <div class="card max-w-2xl">
-        <h1 class="title-banner text-xl">New {{ role_name }} Registration</h1>
-        
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                <div class="p-3 mb-4 text-sm text-{{ 'red' if category == 'error' else 'green' }}-700 bg-{{ 'red' if category == 'error' else 'green' }}-100 rounded-lg" role="alert">
-                    {{ message }}
-                </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-
-        <form method="POST" action="{{ url_for('register', role_id=role_id) }}" class="space-y-6">
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label for="full_name" class="block text-sm font-medium text-gray-700">Full Name</label>
-                    <input type="text" name="full_name" id="full_name" required
-                        class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                </div>
-                <div>
-                    <label for="enrollment_number" class="block text-sm font-medium text-gray-700">Enrollment Number</label>
-                    <input type="text" name="enrollment_number" id="enrollment_number" required
-                        class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                </div>
-            </div>
-
-            {% if role_id == 3 %}
-            <!-- Student Specific Fields -->
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                    <label for="course" class="block text-sm font-medium text-gray-700">Course</label>
-                    <select name="course" id="course" required class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
-                        <option value="B.Tech">B.Tech</option>
-                    </select>
-                </div>
-                <div>
-                    <label for="branch" class="block text-sm font-medium text-gray-700">Branch</label>
-                    <select name="branch" id="branch" required class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
-                        <option value="CSE">CSE</option>
-                        <option value="ECE">ECE</option>
-                        <option value="MECH">MECH</option>
-                        <option value="CIVIL">CIVIL</option>
-                    </select>
-                </div>
-                <div>
-                    <label for="batch" class="block text-sm font-medium text-gray-700">Batch (Joining Year)</label>
-                    <input type="number" name="batch" id="batch" required min="2000" max="{{ datetime.now().year }}" value="{{ datetime.now().year }}"
-                        class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                </div>
-            </div>
-            {% endif %}
-
-            {% if role_id == 2 %}
-            <!-- Teacher Specific Field -->
-            <div>
-                <label for="subject_id" class="block text-sm font-medium text-gray-700">Assigned Subject (Primary)</label>
-                <select name="subject_id" id="subject_id" required class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500">
-                    {% for subject in subjects %}
-                        <option value="{{ subject.id }}">{{ subject.name }} ({{ subject.branch }} - Sem {{ subject.semester }})</option>
-                    {% endfor %}
-                </select>
-            </div>
-            {% endif %}
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
-                    <input type="password" name="password" id="password" required
-                        class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                </div>
-                <div>
-                    <label for="confirm_password" class="block text-sm font-medium text-gray-700">Confirm Password</label>
-                    <input type="password" name="confirm_password" id="confirm_password" required
-                        class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                </div>
-            </div>
-
-            <button type="submit"
-                class="w-full px-6 py-3 text-white bg-blue-600 rounded-lg font-semibold hover:bg-blue-700 transition duration-150 shadow-md">
-                Finish Registration
-            </button>
-        </form>
-    </div>
-</body>
-"""
-
-STUDENT_DASHBOARD_HTML = TAILWIND_HEADER + """
-<title>Student Dashboard</title>
-<body class="bg-gray-50 p-4 sm:p-8">
-    <div class="max-w-7xl mx-auto">
-        <header class="flex justify-between items-center py-4 border-b">
-            <h1 class="text-3xl font-extrabold text-gray-900">Welcome, {{ user.full_name }} ({{ user.enrollment_number }})</h1>
-            <a href="{{ url_for('logout') }}" class="px-4 py-2 text-sm text-white bg-red-500 rounded-lg hover:bg-red-600 transition">Logout</a>
-        </header>
-
-        {% if low_attendance %}
-        <div class="alert-system mt-6">
-            <p class="font-bold">ATTENDANCE ALERT:</p>
-            <p>Your overall attendance is below the mandatory 75% threshold. Current: {{ attendance_summary.overall_percentage | round(2) }}%. Please attend all classes to avoid academic penalties.</p>
-        </div>
-        {% endif %}
-
-        <main class="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- Details Card -->
-            <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Personal & Academic Details</h2>
-                <div class="grid grid-cols-2 gap-4 text-sm">
-                    <p><strong>Course/Branch:</strong> {{ user.course }} / {{ user.branch }}</p>
-                    <p><strong>Batch:</strong> {{ user.batch }}</p>
-                    <p><strong>Father's Name:</strong> {{ user.fathers_name or 'N/A' }}</p>
-                    <p><strong>Mother's Name:</strong> {{ user.mothers_name or 'N/A' }}</p>
-                    <p><strong>Date of Birth:</strong> {{ user.dob or 'N/A' }}</p>
-                    <p><strong>Blood Group:</strong> {{ user.blood_group or 'N/A' }}</p>
-                    <p><strong>Contact No:</strong> {{ user.contact_no or 'N/A' }}</p>
-                    <p class="col-span-2"><strong>Address:</strong> {{ user.address or '' }}, {{ user.district or '' }}, {{ user.state or '' }} - {{ user.pin_code or '' }}</p>
-                </div>
-                <button onclick="document.getElementById('details-form').style.display='block'; this.style.display='none';" 
-                    class="mt-4 px-4 py-2 text-sm text-white bg-green-500 rounded-lg hover:bg-green-600 transition">
-                    Update Personal Details
-                </button>
-                <form id="details-form" method="POST" action="{{ url_for('update_student_details') }}" class="mt-4 p-4 border rounded-lg bg-gray-50" style="display:none;">
-                    <h3 class="font-semibold mb-2">Update Details (Next Page of Registration)</h3>
-                    <input type="text" name="fathers_name" placeholder="Father's Name" class="w-full p-2 border rounded-md mb-2" value="{{ user.fathers_name or '' }}" required>
-                    <input type="text" name="mothers_name" placeholder="Mother's Name" class="w-full p-2 border rounded-md mb-2" value="{{ user.mothers_name or '' }}" required>
-                    <input type="date" name="dob" placeholder="Date of Birth" class="w-full p-2 border rounded-md mb-2" value="{{ user.dob.isoformat() if user.dob else '' }}" required>
-                    <input type="text" name="blood_group" placeholder="Blood Group (e.g., A+)" class="w-full p-2 border rounded-md mb-2" value="{{ user.blood_group or '' }}">
-                    <input type="text" name="address" placeholder="Address" class="w-full p-2 border rounded-md mb-2" value="{{ user.address or '' }}" required>
-                    <input type="text" name="district" placeholder="District" class="w-full p-2 border rounded-md mb-2" value="{{ user.district or '' }}" required>
-                    <input type="text" name="state" placeholder="State" class="w-full p-2 border rounded-md mb-2" value="{{ user.state or '' }}" required>
-                    <input type="text" name="pin_code" placeholder="Pin Code" class="w-full p-2 border rounded-md mb-2" value="{{ user.pin_code or '' }}" required>
-                    <input type="text" name="contact_no" placeholder="Contact No." class="w-full p-2 border rounded-md mb-2" value="{{ user.contact_no or '' }}" required>
-                    <button type="submit" class="w-full px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition">Submit Details</button>
-                </form>
-            </div>
-
-            <!-- Fingerprint and Summary Card -->
-            <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Biometric & Attendance Summary</h2>
-                <div class="space-y-3">
-                    <p class="text-lg font-bold">Overall Attendance: <span class="text-blue-600">{{ attendance_summary.overall_percentage | round(2) }}%</span></p>
-                    <p class="text-sm text-gray-600">Classes Attended: {{ attendance_summary.attended_classes }} / {{ attendance_summary.total_classes }}</p>
-                </div>
-                
-                <h3 class="mt-6 text-lg font-medium border-t pt-4">Registered Fingerprints (Simulated)</h3>
-                <ul class="list-disc list-inside mt-2 text-sm text-gray-700 space-y-1">
-                    {% for fp in fingerprints %}
-                        <li>{{ fp }}</li>
-                    {% endfor %}
-                </ul>
-                <p class="text-xs mt-2 text-gray-500">Note: Actual integration requires dedicated hardware and drivers. This represents the data stored for authentication.</p>
-            </div>
-        </main>
-
-        <!-- Subject-wise Attendance -->
-        <div class="mt-8 bg-white p-6 rounded-xl shadow-lg">
-            <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Subject-wise Attendance Breakdown</h2>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Semester</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Classes Attended</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Classes</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Percentage</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        {% for subject_id, data in subject_attendance.items() %}
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ data.subject.name }} ({{ data.subject.code }})</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ data.subject.semester }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ data.attended }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ data.total }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-bold {{ 'text-red-500' if data.percentage < 75 else 'text-green-600' }}">
-                                {{ data.percentage | round(2) }}%
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% if not subject_attendance %}
-            <p class="text-center py-4 text-gray-500">No attendance records found yet.</p>
-            {% endif %}
-        </div>
-    </div>
-</body>
-"""
-
-TEACHER_DASHBOARD_HTML = TAILWIND_HEADER + """
-<title>Teacher Dashboard</title>
-<body class="bg-gray-50 p-4 sm:p-8">
-    <div class="max-w-7xl mx-auto">
-        <header class="flex justify-between items-center py-4 border-b">
-            <h1 class="text-3xl font-extrabold text-gray-900">Welcome, {{ user.full_name }} (Teacher ID: {{ user.enrollment_number }})</h1>
-            <a href="{{ url_for('logout') }}" class="px-4 py-2 text-sm text-white bg-red-500 rounded-lg hover:bg-red-600 transition">Logout</a>
-        </header>
-
-        <main class="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- Details Card -->
-            <div class="lg:col-span-1 bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Teaching Assignment</h2>
-                <p><strong>Subject:</strong> {{ user.subject.name }}</p>
-                <p><strong>Course/Branch:</strong> {{ user.subject.course }} / {{ user.subject.branch }}</p>
-                <p><strong>Semester:</strong> {{ user.subject.semester }}</p>
-                <h3 class="mt-6 text-lg font-medium border-t pt-4">Registered Fingerprints (Simulated)</h3>
-                <ul class="list-disc list-inside mt-2 text-sm text-gray-700 space-y-1">
-                    {% for fp in fingerprints %}
-                        <li>{{ fp }}</li>
-                    {% endfor %}
-                </ul>
-            </div>
+            role = st.selectbox("Login As", 
+                              options=[3, 2, 1],
+                              format_func=lambda x: get_role_name(x))
             
-            <!-- Attendance Management Card -->
-            <div class="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Attendance System (Biometric Simulation)</h2>
-                
-                <form method="POST" action="{{ url_for('punch') }}" class="space-y-4">
-                    <input type="hidden" name="teacher_id" value="{{ user.id }}">
-                    <input type="hidden" name="subject_id" value="{{ user.subject_id }}">
-                    <div class="flex items-end space-x-4">
-                        <div class="flex-1">
-                            <label for="enrollment_number" class="block text-sm font-medium text-gray-700">Student Enrollment ID</label>
-                            <input type="text" name="enrollment_number" placeholder="Enter Student ID for Punch" required
-                                class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" />
-                        </div>
-                        <button type="submit" name="action" value="punch_in"
-                            class="px-6 py-3 text-white bg-green-600 rounded-lg font-semibold hover:bg-green-700 transition duration-150 shadow-md">
-                            Punch In (Start Class)
-                        </button>
-                        <button type="submit" name="action" value="punch_out"
-                            class="px-6 py-3 text-white bg-red-600 rounded-lg font-semibold hover:bg-red-700 transition duration-150 shadow-md">
-                            Punch Out (End Class)
-                        </button>
-                    </div>
-                    <p class="text-xs text-gray-500 mt-1">Punch In starts the class. All student punches within a 30-min window are counted. Punch Out ends the class and finalizes the attendance record.</p>
-                </form>
-
-                <div class="mt-6 border-t pt-4">
-                    <h3 class="text-lg font-medium mb-2">Total Students in Subject: {{ total_students }}</h3>
-                    <p class="text-2xl font-bold text-blue-600">{{ total_present }} / {{ total_classes }} ({{ total_present_percentage | round(2) }}%)</p>
-                    <p class="text-sm text-gray-500">This is the total present count/percentage for your subject across all recorded sessions.</p>
+            enrollment_number = st.text_input("Enrollment Number", placeholder="Enter your enrollment ID")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                captcha_input = st.text_input("Enter Captcha", placeholder="Enter the code")
+            with col_b:
+                st.text_input("Captcha Code", value=st.session_state.captcha, disabled=True)
+            
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                submit = st.form_submit_button("🔐 Login", use_container_width=True)
+            with col_btn2:
+                if st.form_submit_button("📝 Register", use_container_width=True):
+                    st.session_state.page = 'register_select'
+                    st.rerun()
+            
+            if submit:
+                if captcha_input.upper() != st.session_state.captcha.upper():
+                    st.error("❌ Invalid Captcha. Please try again.")
+                    st.session_state.captcha = generate_captcha()
+                else:
+                    user = session.query(User).filter_by(
+                        enrollment_number=enrollment_number,
+                        role=role
+                    ).first()
                     
-                    <a href="{{ url_for('download_report', subject_id=user.subject_id) }}" 
-                       class="mt-4 inline-block px-4 py-2 text-sm text-white bg-teal-500 rounded-lg hover:bg-teal-600 transition shadow-md">
-                        Download Attendance Report (CSV/Excel)
-                    </a>
-                </div>
-            </div>
-        </main>
+                    if user and user.check_password(password):
+                        st.session_state.logged_in = True
+                        st.session_state.user_id = user.id
+                        st.session_state.user_role = user.role
+                        st.session_state.page = 'dashboard'
+                        st.success(f"✅ Welcome back, {user.full_name}!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid credentials. Please try again.")
+                        st.session_state.captcha = generate_captcha()
         
-        <!-- Live Attendance Table -->
-        <div class="mt-8 bg-white p-6 rounded-xl shadow-lg">
-            <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Today's Class Attendance (Live/Latest Session)</h2>
-            <div class="overflow-x-auto">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead class="bg-gray-50">
-                        <tr>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Enrollment No.</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Student Name</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In Time</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out Time</th>
-                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                        </tr>
-                    </thead>
-                    <tbody class="bg-white divide-y divide-gray-200">
-                        {% for record in latest_attendance %}
-                        <tr>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ record.student.enrollment_number }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ record.student.full_name }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ record.punch_in_time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ record.punch_out_time.strftime('%Y-%m-%d %H:%M:%S') if record.punch_out_time else 'N/A' }}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">{{ record.status }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% if not latest_attendance %}
-            <p class="text-center py-4 text-gray-500">No active or recent class attendance records found for your subject.</p>
-            {% endif %}
-        </div>
-    </div>
-</body>
-"""
+        st.divider()
+        st.info("**Demo Credentials:**\n\n- Admin: `ADMIN001` / `adminpass`\n- Teacher: `TCH101` / `teacherpass`\n- Student: `STU2025001` / `studentpass`")
 
-ADMIN_DASHBOARD_HTML = TAILWIND_HEADER + """
-<title>Admin Dashboard</title>
-<body class="bg-gray-50 p-4 sm:p-8">
-    <div class="max-w-7xl mx-auto">
-        <header class="flex justify-between items-center py-4 border-b">
-            <h1 class="text-3xl font-extrabold text-gray-900">Admin Control Panel</h1>
-            <a href="{{ url_for('logout') }}" class="px-4 py-2 text-sm text-white bg-red-500 rounded-lg hover:bg-red-600 transition">Logout</a>
-        </header>
-
-        <main class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div class="bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">System Overview</h2>
-                <p>Total Users: <span class="font-bold">{{ total_users }}</span></p>
-                <p>Total Students: <span class="font-bold">{{ total_students }}</span></p>
-                <p>Total Teachers: <span class="font-bold">{{ total_teachers }}</span></p>
-                <p>Total Subjects: <span class="font-bold">{{ total_subjects }}</span></p>
-            </div>
-            <div class="bg-white p-6 rounded-xl shadow-lg md:col-span-2">
-                <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-blue-600">Student Enrollment Details</h2>
-                <div class="overflow-x-auto h-96 overflow-y-scroll">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Course</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            {% for u in users %}
-                            <tr>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{{ u.enrollment_number }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ u.full_name }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{{ u.course or u.subject.branch if u.subject else 'N/A' }}</td>
-                                <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-blue-600">{{ get_role_name(u.role) }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </main>
-        
-        <!-- Attendance Data Management (Simulated Delete) -->
-        <div class="mt-8 bg-white p-6 rounded-xl shadow-lg">
-            <h2 class="text-xl font-semibold border-b pb-2 mb-4 text-red-600">Manage Attendance Records</h2>
-            <form method="POST" action="{{ url_for('admin_delete_data') }}" class="space-y-4">
-                <p class="text-sm text-gray-600">Use this to delete all attendance data. This action is irreversible.</p>
-                <div class="flex items-center space-x-4">
-                    <input type="text" name="confirm" placeholder="Type 'CONFIRM DELETE' to proceed" required
-                        class="flex-1 p-3 border border-red-300 rounded-lg shadow-sm focus:ring-red-500 focus:border-red-500" />
-                    <button type="submit"
-                        class="px-6 py-3 text-white bg-red-700 rounded-lg font-semibold hover:bg-red-800 transition duration-150 shadow-md">
-                        Permanently Delete All Attendance Data
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-</body>
-"""
-
-# --- 5. ROUTES ---
-
-# General Routes
-@app.route('/')
-def index():
-    """Login Page"""
-    # If already logged in, redirect to dashboard
-    user = get_current_user()
-    if user:
-        if user.role == User.ADMIN: return redirect(url_for('admin_dashboard'))
-        if user.role == User.TEACHER: return redirect(url_for('teacher_dashboard'))
-        if user.role == User.STUDENT: return redirect(url_for('student_dashboard'))
+def register_select_page():
+    st.markdown('<h1 class="main-header">📋 Register New Account</h1>', unsafe_allow_html=True)
     
-    session['captcha'] = generate_captcha()
-    return render_template_string(LOGIN_HTML, captcha=session['captcha'])
-
-@app.route('/login', methods=['POST'])
-def login():
-    """Handle Login Logic"""
-    enrollment_number = request.form.get('enrollment_number')
-    password = request.form.get('password')
-    role_id = int(request.form.get('role'))
-    captcha_input = request.form.get('captcha_input')
-    captcha_value = request.form.get('captcha_value')
-
-    if captcha_input.upper() != captcha_value.upper():
-        flash('Invalid Captcha. Please try again.', 'error')
-        return redirect(url_for('index'))
+    col1, col2, col3 = st.columns([1, 2, 1])
     
-    user = User.query.filter_by(enrollment_number=enrollment_number, role=role_id).first()
-
-    if user and user.check_password(password):
-        session['user_id'] = user.id
-        flash(f'Welcome back, {user.full_name}!', 'success')
-        if user.role == User.ADMIN: return redirect(url_for('admin_dashboard'))
-        if user.role == User.TEACHER: return redirect(url_for('teacher_dashboard'))
-        if user.role == User.STUDENT: return redirect(url_for('student_dashboard'))
-    else:
-        flash('Invalid Enrollment Number, Password, or Role combination.', 'error')
-        return redirect(url_for('index'))
-
-@app.route('/logout')
-def logout():
-    session.pop('user_id', None)
-    flash('You have been logged out.', 'success')
-    return redirect(url_for('index'))
-
-@app.route('/register')
-def register_select():
-    """Page to select role for registration"""
-    return render_template_string(REGISTER_SELECT_HTML)
-
-@app.route('/register/<int:role_id>', methods=['GET', 'POST'])
-def register(role_id):
-    """Handle Registration Logic"""
-    role_name = get_user_role_name(role_id)
-    subjects = Subject.query.order_by(Subject.course, Subject.branch, Subject.semester).all()
-
-    if request.method == 'POST':
-        full_name = request.form.get('full_name')
-        enrollment_number = request.form.get('enrollment_number')
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
+    with col2:
+        st.subheader("Select Your Role")
         
-        if password != confirm_password:
-            flash('Passwords do not match.', 'error')
-            return redirect(url_for('register', role_id=role_id))
+        if st.button("👨‍🎓 Register as Student", use_container_width=True):
+            st.session_state.page = 'register_student'
+            st.rerun()
+        
+        if st.button("👨‍🏫 Register as Teacher", use_container_width=True):
+            st.session_state.page = 'register_teacher'
+            st.rerun()
+        
+        st.divider()
+        
+        if st.button("← Back to Login", use_container_width=True):
+            st.session_state.page = 'login'
+            st.rerun()
 
-        if User.query.filter_by(enrollment_number=enrollment_number).first():
-            flash('Enrollment Number already registered.', 'error')
-            return redirect(url_for('register', role_id=role_id))
+def register_page(role_id):
+    role_name = get_role_name(role_id)
+    st.markdown(f'<h1 class="main-header">New {role_name} Registration</h1>', unsafe_allow_html=True)
+    
+    with st.form("registration_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            full_name = st.text_input("Full Name", placeholder="Enter your full name")
+        with col2:
+            enrollment_number = st.text_input("Enrollment Number", placeholder="Enter enrollment ID")
+        
+        if role_id == User.STUDENT:
+            col3, col4, col5 = st.columns(3)
+            with col3:
+                course = st.selectbox("Course", ["B.Tech"])
+            with col4:
+                branch = st.selectbox("Branch", ["CSE", "ECE", "MECH", "CIVIL"])
+            with col5:
+                batch = st.number_input("Batch Year", min_value=2000, max_value=datetime.now().year, value=datetime.now().year)
+        
+        if role_id == User.TEACHER:
+            subjects = session.query(Subject).order_by(Subject.course, Subject.branch, Subject.semester).all()
+            subject_options = {s.id: f"{s.name} ({s.branch} - Sem {s.semester})" for s in subjects}
+            subject_id = st.selectbox("Assigned Subject", options=list(subject_options.keys()), format_func=lambda x: subject_options[x])
+        
+        col6, col7 = st.columns(2)
+        with col6:
+            password = st.text_input("Password", type="password", placeholder="Create a password")
+        with col7:
+            confirm_password = st.text_input("Confirm Password", type="password", placeholder="Re-enter password")
+        
+        col8, col9 = st.columns(2)
+        with col8:
+            submit = st.form_submit_button("✅ Complete Registration", use_container_width=True)
+        with col9:
+            if st.form_submit_button("← Back", use_container_width=True):
+                st.session_state.page = 'register_select'
+                st.rerun()
+        
+        if submit:
+            if password != confirm_password:
+                st.error("❌ Passwords do not match!")
+            elif session.query(User).filter_by(enrollment_number=enrollment_number).first():
+                st.error("❌ Enrollment Number already registered!")
+            elif not full_name or not enrollment_number or not password:
+                st.error("❌ Please fill all required fields!")
+            else:
+                try:
+                    fingerprints = json.dumps([f'Simulated Finger {i} for {enrollment_number}' for i in range(1, 6)])
+                    
+                    new_user = User(
+                        full_name=full_name,
+                        enrollment_number=enrollment_number,
+                        role=role_id,
+                        fingerprint_data=fingerprints
+                    )
+                    new_user.set_password(password)
+                    
+                    if role_id == User.STUDENT:
+                        new_user.course = course
+                        new_user.branch = branch
+                        new_user.batch = batch
+                        new_user.fathers_name = 'N/A'
+                    elif role_id == User.TEACHER:
+                        new_user.subject_id = subject_id
+                    
+                    session.add(new_user)
+                    session.commit()
+                    st.success(f"✅ {role_name} registered successfully! Please login.")
+                    st.session_state.page = 'login'
+                    st.rerun()
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"❌ Registration failed: {e}")
 
-        # Initial Fingerprint Setup (Simulated)
-        fingerprints = json.dumps([f'Simulated Finger {i} for {enrollment_number}' for i in range(1, 6)])
-
-        try:
-            new_user = User(
-                full_name=full_name,
-                enrollment_number=enrollment_number,
-                role=role_id,
-                fingerprint_data=fingerprints
-            )
-            new_user.set_password(password)
-
-            if role_id == User.STUDENT:
-                new_user.course = request.form.get('course')
-                new_user.branch = request.form.get('branch')
-                new_user.batch = request.form.get('batch')
-                
-                # Student initial details are set to null until 'next page' is filled
-                new_user.fathers_name = 'N/A'
-                
-            elif role_id == User.TEACHER:
-                new_user.subject_id = request.form.get('subject_id')
-
-            db.session.add(new_user)
-            db.session.commit()
-            flash(f'{role_name} registered successfully! Please log in.', 'success')
-            return redirect(url_for('index'))
-        except Exception as e:
-            db.session.rollback()
-            flash(f'An error occurred during registration: {e}', 'error')
-            return redirect(url_for('register', role_id=role_id))
-
-    return render_template_string(REGISTRATION_FORM_HTML, role_id=role_id, role_name=role_name, subjects=subjects, datetime=datetime)
-
-# --- Student Routes ---
-@app.route('/dashboard/student')
 def student_dashboard():
-    user = get_current_user()
-    if not user or user.role != User.STUDENT:
-        flash('Access denied.', 'error')
-        return redirect(url_for('index'))
-
-    # 1. Personal Details / Fingerprints
-    fingerprints = json.loads(user.fingerprint_data)
-
-    # 2. Attendance Calculation
-    student_attendance_records = Attendance.query.filter_by(student_id=user.id).all()
+    user = session.query(User).get(st.session_state.user_id)
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("👨‍🎓 Student Panel")
+        st.write(f"**Name:** {user.full_name}")
+        st.write(f"**ID:** {user.enrollment_number}")
+        st.write(f"**Course:** {user.course}")
+        st.write(f"**Branch:** {user.branch}")
+        st.divider()
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.page = 'login'
+            st.rerun()
+    
+    # Main content
+    st.markdown(f'<h1 class="main-header">Welcome, {user.full_name}!</h1>', unsafe_allow_html=True)
+    
+    # Calculate attendance
+    attendance_records = session.query(Attendance).filter_by(student_id=user.id).all()
     
     subject_attendance = {}
     total_attended = 0
     total_classes = 0
-
-    for rec in student_attendance_records:
+    
+    for rec in attendance_records:
         sub_id = rec.subject_id
         if sub_id not in subject_attendance:
-            subject_attendance[sub_id] = {'attended': 0, 'total': 0, 'subject': rec.subject_rel}
-
-        # Count as attended only if punched in and the class record has a punch-out (is finalized)
+            subject_attendance[sub_id] = {
+                'attended': 0, 
+                'total': 0, 
+                'subject': rec.subject_rel
+            }
+        
         if rec.status == 'Present':
             subject_attendance[sub_id]['attended'] += 1
             total_attended += 1
@@ -775,285 +428,441 @@ def student_dashboard():
         subject_attendance[sub_id]['total'] += 1
         total_classes += 1
     
-    # Calculate percentages
     for sub_id, data in subject_attendance.items():
         data['percentage'] = (data['attended'] / data['total']) * 100 if data['total'] > 0 else 100
-
+    
     overall_percentage = (total_attended / total_classes) * 100 if total_classes > 0 else 100
     
-    attendance_summary = {
-        'overall_percentage': overall_percentage,
-        'attended_classes': total_attended,
-        'total_classes': total_classes
-    }
-
-    # 3. Alert System (below 75%)
-    low_attendance = overall_percentage < 75
+    # Alert for low attendance
+    if overall_percentage < 75:
+        st.markdown(f"""
+        <div class="alert-box">
+            <strong>⚠️ ATTENDANCE ALERT:</strong><br>
+            Your overall attendance is below the mandatory 75% threshold. 
+            Current: <strong>{overall_percentage:.2f}%</strong>. 
+            Please attend all classes to avoid academic penalties.
+        </div>
+        """, unsafe_allow_html=True)
     
-    return render_template_string(STUDENT_DASHBOARD_HTML, 
-                                  user=user, 
-                                  fingerprints=fingerprints,
-                                  subject_attendance=subject_attendance,
-                                  attendance_summary=attendance_summary,
-                                  low_attendance=low_attendance)
-
-@app.route('/student/update_details', methods=['POST'])
-def update_student_details():
-    user = get_current_user()
-    if not user or user.role != User.STUDENT:
-        flash('Access denied.', 'error')
-        return redirect(url_for('index'))
-
-    try:
-        user.fathers_name = request.form.get('fathers_name')
-        user.mothers_name = request.form.get('mothers_name')
-        user.dob = datetime.strptime(request.form.get('dob'), '%Y-%m-%d').date()
-        user.blood_group = request.form.get('blood_group')
-        user.address = request.form.get('address')
-        user.district = request.form.get('district')
-        user.state = request.form.get('state')
-        user.pin_code = request.form.get('pin_code')
-        user.contact_no = request.form.get('contact_no')
+    # Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📊 Overall Attendance", f"{overall_percentage:.2f}%", 
+                 delta=f"{overall_percentage - 75:.2f}%" if overall_percentage >= 75 else None,
+                 delta_color="normal" if overall_percentage >= 75 else "inverse")
+    with col2:
+        st.metric("✅ Classes Attended", total_attended)
+    with col3:
+        st.metric("📚 Total Classes", total_classes)
+    
+    # Personal Details
+    with st.expander("👤 Personal & Academic Details", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Father's Name:** {user.fathers_name or 'N/A'}")
+            st.write(f"**Mother's Name:** {user.mothers_name or 'N/A'}")
+            st.write(f"**Date of Birth:** {user.dob or 'N/A'}")
+            st.write(f"**Blood Group:** {user.blood_group or 'N/A'}")
+        with col2:
+            st.write(f"**Contact No:** {user.contact_no or 'N/A'}")
+            st.write(f"**Address:** {user.address or 'N/A'}")
+            st.write(f"**District:** {user.district or 'N/A'}")
+            st.write(f"**State:** {user.state or 'N/A'}")
         
-        db.session.commit()
-        flash('Personal details updated successfully!', 'success')
-    except Exception as e:
-        db.session.rollback()
-        flash(f'Error updating details: {e}', 'error')
+        if st.button("✏️ Update Personal Details"):
+            st.session_state.show_update_form = True
+    
+    if st.session_state.get('show_update_form', False):
+        with st.form("update_details"):
+            st.subheader("Update Personal Information")
+            col1, col2 = st.columns(2)
+            with col1:
+                fathers_name = st.text_input("Father's Name", value=user.fathers_name or '')
+                mothers_name = st.text_input("Mother's Name", value=user.mothers_name or '')
+                dob = st.date_input("Date of Birth", value=user.dob if user.dob else datetime.now().date())
+                blood_group = st.text_input("Blood Group", value=user.blood_group or '')
+            with col2:
+                address = st.text_input("Address", value=user.address or '')
+                district = st.text_input("District", value=user.district or '')
+                state = st.text_input("State", value=user.state or '')
+                pin_code = st.text_input("Pin Code", value=user.pin_code or '')
+                contact_no = st.text_input("Contact Number", value=user.contact_no or '')
+            
+            if st.form_submit_button("💾 Save Details"):
+                user.fathers_name = fathers_name
+                user.mothers_name = mothers_name
+                user.dob = dob
+                user.blood_group = blood_group
+                user.address = address
+                user.district = district
+                user.state = state
+                user.pin_code = pin_code
+                user.contact_no = contact_no
+                session.commit()
+                st.success("✅ Details updated successfully!")
+                st.session_state.show_update_form = False
+                st.rerun()
+    
+    # Subject-wise Attendance
+    st.subheader("📖 Subject-wise Attendance Breakdown")
+    if subject_attendance:
+        data = []
+        for sub_id, info in subject_attendance.items():
+            data.append({
+                'Subject': f"{info['subject'].name} ({info['subject'].code})",
+                'Semester': info['subject'].semester,
+                'Attended': info['attended'],
+                'Total': info['total'],
+                'Percentage': f"{info['percentage']:.2f}%"
+            })
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("📝 No attendance records found yet.")
+    
+    # Biometric Info
+    with st.expander("🔐 Registered Fingerprints (Simulated)", expanded=False):
+        fingerprints = json.loads(user.fingerprint_data)
+        for i, fp in enumerate(fingerprints, 1):
+            st.write(f"{i}. {fp}")
+        st.caption("Note: Actual integration requires dedicated hardware and drivers.")
 
-    return redirect(url_for('student_dashboard'))
-
-
-# --- Teacher Routes & Attendance Logic ---
-@app.route('/dashboard/teacher')
 def teacher_dashboard():
-    user = get_current_user()
-    if not user or user.role != User.TEACHER or not user.subject:
-        flash('Access denied or no subject assigned.', 'error')
-        return redirect(url_for('index'))
-
-    fingerprints = json.loads(user.fingerprint_data)
-
-    # Calculate overall subject attendance for dashboard summary
-    subject_students = User.query.filter_by(role=User.STUDENT, course=user.subject.course, branch=user.subject.branch).all()
+    user = session.query(User).get(st.session_state.user_id)
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("👨‍🏫 Teacher Panel")
+        st.write(f"**Name:** {user.full_name}")
+        st.write(f"**ID:** {user.enrollment_number}")
+        if user.subject:
+            st.write(f"**Subject:** {user.subject.name}")
+            st.write(f"**Branch:** {user.subject.branch}")
+        st.divider()
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.page = 'login'
+            st.rerun()
+    
+    # Main content
+    st.markdown(f'<h1 class="main-header">Welcome, {user.full_name}!</h1>', unsafe_allow_html=True)
+    
+    if not user.subject:
+        st.error("❌ No subject assigned to your account.")
+        return
+    
+    # Calculate statistics
+    subject_students = session.query(User).filter_by(
+        role=User.STUDENT,
+        course=user.subject.course,
+        branch=user.subject.branch
+    ).all()
     total_students = len(subject_students)
-
-    # Total recorded classes (unique punch-in records by this teacher for this subject)
-    all_attendance = Attendance.query.filter_by(teacher_id=user.id, subject_id=user.subject_id).all()
+    
+    all_attendance = session.query(Attendance).filter_by(
+        teacher_id=user.id,
+        subject_id=user.subject_id
+    ).all()
     
     unique_class_sessions = set()
     for rec in all_attendance:
-        # Group by date and hour (approximate session start)
         session_key = (rec.punch_in_time.date(), rec.punch_in_time.hour)
         unique_class_sessions.add(session_key)
-        
+    
     total_classes = len(unique_class_sessions)
     total_present = len([rec for rec in all_attendance if rec.status == 'Present'])
-    
     total_present_percentage = (total_present / (total_classes * total_students)) * 100 if total_classes * total_students > 0 else 0
-
-    # Get the latest class attendance for the live table
-    latest_punch_in = db.session.query(db.func.max(Attendance.punch_in_time)).filter_by(teacher_id=user.id, subject_id=user.subject_id).scalar()
     
-    latest_attendance = []
-    if latest_punch_in:
-        # Find all attendance records for the students who punched in close to this time
-        time_window = latest_punch_in + timedelta(minutes=30)
+    # Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("👥 Total Students", total_students)
+    with col2:
+        st.metric("📅 Classes Held", total_classes)
+    with col3:
+        st.metric("✅ Total Present", total_present)
+    with col4:
+        st.metric("📊 Attendance %", f"{total_present_percentage:.2f}%")
+    
+    # Attendance Management
+    st.subheader("🔐 Biometric Attendance System")
+    
+    with st.form("punch_form"):
+        col1, col2, col3 = st.columns([2, 1, 1])
         
-        latest_attendance = Attendance.query.filter(
+        with col1:
+            enrollment_number = st.text_input("Student Enrollment ID", placeholder="Enter student ID")
+        with col2:
+            punch_in = st.form_submit_button("✅ Punch In", use_container_width=True)
+        with col3:
+            punch_out = st.form_submit_button("❌ Punch Out", use_container_width=True)
+        
+        st.caption("💡 Punch In starts the class. Students can punch in within 30 minutes. Punch Out finalizes attendance.")
+        
+        if punch_in or punch_out:
+            student = session.query(User).filter_by(
+                enrollment_number=enrollment_number,
+                role=User.STUDENT
+            ).first()
+            
+            if not student:
+                st.error(f"❌ Student with ID '{enrollment_number}' not found!")
+            else:
+                now = datetime.now()
+                latest_class_start = session.query(db.func.max(Attendance.punch_in_time)).filter_by(
+                    teacher_id=user.id,
+                    subject_id=user.subject_id
+                ).scalar()
+                
+                if punch_in:
+                    if latest_class_start and (now - latest_class_start).total_seconds() < 3600:
+                        recent_record = session.query(Attendance).filter(
+                            Attendance.student_id == student.id,
+                            Attendance.teacher_id == user.id,
+                            Attendance.subject_id == user.subject_id,
+                            Attendance.punch_in_time >= latest_class_start
+                        ).first()
+                        
+                        if recent_record:
+                            st.error(f"❌ {student.full_name} is already punched in for this session!")
+                        else:
+                            status = 'Late' if (now - latest_class_start).total_seconds() > 300 else 'Present'
+                            new_punch = Attendance(
+                                student_id=student.id,
+                                subject_id=user.subject_id,
+                                teacher_id=user.id,
+                                punch_in_time=now,
+                                status=status
+                            )
+                            session.add(new_punch)
+                            session.commit()
+                            st.success(f"✅ {student.full_name} punched in at {now.strftime('%H:%M:%S')} - Status: {status}")
+                            st.rerun()
+                    else:
+                        new_session_rec = Attendance(
+                            student_id=student.id,
+                            subject_id=user.subject_id,
+                            teacher_id=user.id,
+                            punch_in_time=now,
+                            status='Present'
+                        )
+                        session.add(new_session_rec)
+                        session.commit()
+                        st.success(f"🎉 New class session started! {student.full_name} punched in at {now.strftime('%H:%M:%S')}")
+                        st.rerun()
+                
+                elif punch_out:
+                    if not latest_class_start:
+                        st.error("❌ No active class session found!")
+                    else:
+                        records_to_finalize = session.query(Attendance).filter(
+                            Attendance.teacher_id == user.id,
+                            Attendance.subject_id == user.subject_id,
+                            Attendance.punch_in_time >= latest_class_start - timedelta(minutes=5),
+                            Attendance.punch_out_time.is_(None)
+                        ).all()
+                        
+                        for record in records_to_finalize:
+                            record.punch_out_time = now
+                        
+                        session.commit()
+                        st.success(f"✅ Class ended! {len(records_to_finalize)} attendance records finalized at {now.strftime('%H:%M:%S')}")
+                        st.rerun()
+    
+    # Latest Session Attendance
+    st.subheader("📋 Today's Class Attendance (Latest Session)")
+    
+    latest_punch_in = session.query(db.func.max(Attendance.punch_in_time)).filter_by(
+        teacher_id=user.id,
+        subject_id=user.subject_id
+    ).scalar()
+    
+    if latest_punch_in:
+        time_window = latest_punch_in + timedelta(minutes=30)
+        latest_attendance = session.query(Attendance).filter(
             Attendance.teacher_id == user.id,
             Attendance.subject_id == user.subject_id,
-            Attendance.punch_in_time >= latest_punch_in - timedelta(minutes=5), # Account for minor variations
-            Attendance.punch_in_time <= time_window # Students can punch in up to 30 mins later
-        ).join(User, Attendance.student_id == User.id).order_by(Attendance.punch_in_time.desc()).all()
-
-
-    return render_template_string(TEACHER_DASHBOARD_HTML,
-                                  user=user,
-                                  fingerprints=fingerprints,
-                                  total_students=total_students,
-                                  total_classes=total_classes,
-                                  total_present=total_present,
-                                  total_present_percentage=total_present_percentage,
-                                  latest_attendance=latest_attendance)
-
-@app.route('/attendance/punch', methods=['POST'])
-def punch():
-    """Simulated Biometric Punch-in/Punch-out System"""
-    teacher_id = request.form.get('teacher_id')
-    subject_id = request.form.get('subject_id')
-    enrollment_number = request.form.get('enrollment_number')
-    action = request.form.get('action') # 'punch_in' or 'punch_out'
-    now = datetime.now()
-
-    student = User.query.filter_by(enrollment_number=enrollment_number, role=User.STUDENT).first()
-
-    if not student:
-        flash(f'Error: User with ID {enrollment_number} not found or is not a student.', 'error')
-        return redirect(url_for('teacher_dashboard'))
-
-    # Check for a recent class start time by this teacher for this subject (within 5 mins)
-    latest_class_start = Attendance.query.with_entities(db.func.max(Attendance.punch_in_time)).filter_by(teacher_id=teacher_id, subject_id=subject_id).scalar()
-    
-    if action == 'punch_in':
-        # Rule: Only create a new session if the last punch-out was over 1 hour ago
-        if latest_class_start and (now - latest_class_start).total_seconds() < 3600:
-            # Check if student is already marked for this session
-            recent_record = Attendance.query.filter(
-                Attendance.student_id == student.id,
-                Attendance.teacher_id == teacher_id,
-                Attendance.subject_id == subject_id,
-                Attendance.punch_in_time >= latest_class_start,
-            ).first()
-
-            if recent_record:
-                flash(f'{student.full_name}: You are already punched in for the current session.', 'error')
-                return redirect(url_for('teacher_dashboard'))
-            
-            # Student is punching into an *active* class (within 30 mins of the teacher's latest start time)
-            new_punch_in = Attendance(
-                student_id=student.id,
-                subject_id=subject_id,
-                teacher_id=teacher_id,
-                punch_in_time=now,
-                status='Late' if (now - latest_class_start).total_seconds() > 300 else 'Present'
-            )
-            db.session.add(new_punch_in)
-            flash(f'{student.full_name} PUNCH IN recorded at {now.strftime("%H:%M:%S")}.', 'success')
-        
-        else:
-            # Teacher is starting a new class session
-            new_session = Attendance(
-                student_id=student.id, # Record the teacher's initial punch-in for the session start time
-                subject_id=subject_id,
-                teacher_id=teacher_id,
-                punch_in_time=now,
-                status='Present'
-            )
-            db.session.add(new_session)
-            flash(f'New Class Session STARTED. {student.full_name} PUNCH IN recorded at {now.strftime("%H:%M:%S")}.', 'success')
-
-        db.session.commit()
-        
-    elif action == 'punch_out':
-        # Rule: Finalize the entire attendance record for the class that started most recently
-        if not latest_class_start:
-            flash('Error: No active class session found to punch out from.', 'error')
-            return redirect(url_for('teacher_dashboard'))
-
-        # Find all attendance records that belong to the latest class session and haven't been punched out
-        records_to_finalize = Attendance.query.filter(
-            Attendance.teacher_id == teacher_id,
-            Attendance.subject_id == subject_id,
-            Attendance.punch_in_time >= latest_class_start - timedelta(minutes=5), # Records around the start time
-            Attendance.punch_out_time.is_(None)
+            Attendance.punch_in_time >= latest_punch_in - timedelta(minutes=5),
+            Attendance.punch_in_time <= time_window
         ).all()
         
-        for record in records_to_finalize:
-            record.punch_out_time = now
-            # Note: The student who initiated the punch-out doesn't need a new record, just their existing one finalized.
-
-        db.session.commit()
-        flash(f'Class Session ENDED. All {len(records_to_finalize)} attendance records finalized at {now.strftime("%H:%M:%S")}.', 'success')
-        
-    return redirect(url_for('teacher_dashboard'))
-
-@app.route('/download_report/<int:subject_id>')
-def download_report(subject_id):
-    """Generates and serves the CSV report for a subject"""
-    user = get_current_user()
-    if not user or user.role != User.TEACHER or user.subject_id != subject_id:
-        flash('Access denied.', 'error')
-        return redirect(url_for('index'))
-
-    subject = Subject.query.get(subject_id)
-    if not subject:
-        flash('Subject not found.', 'error')
-        return redirect(url_for('teacher_dashboard'))
-
-    # Fetch all attendance records for this subject
-    records = Attendance.query.filter_by(subject_id=subject_id).join(User, Attendance.student_id == User.id).order_by(Attendance.punch_in_time.desc()).all()
-
-    # Create CSV data
-    output = StringIO()
-    writer = csv.writer(output)
-
-    # Header Row
-    header = ['Date', 'Subject Code', 'Enrollment Number', 'Student Name', 'Punch In Time', 'Punch Out Time', 'Status']
-    writer.writerow(header)
-
-    # Data Rows
-    for record in records:
-        row = [
-            record.punch_in_time.strftime('%Y-%m-%d'),
-            subject.code,
-            record.student.enrollment_number,
-            record.student.full_name,
-            record.punch_in_time.strftime('%H:%M:%S'),
-            record.punch_out_time.strftime('%H:%M:%S') if record.punch_out_time else 'N/A',
-            record.status
-        ]
-        writer.writerow(row)
-
-    # Prepare response
-    response = make_response(output.getvalue())
-    response.headers["Content-Disposition"] = f"attachment; filename=attendance_report_{subject.code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    response.headers["Content-type"] = "text/csv"
-    return response
-
-# --- Admin Routes ---
-@app.route('/dashboard/admin')
-def admin_dashboard():
-    user = get_current_user()
-    if not user or user.role != User.ADMIN:
-        flash('Access denied. Admin privileges required.', 'error')
-        return redirect(url_for('index'))
-
-    # System Overview Data
-    total_users = User.query.count()
-    total_students = User.query.filter_by(role=User.STUDENT).count()
-    total_teachers = User.query.filter_by(role=User.TEACHER).count()
-    total_subjects = Subject.query.count()
-    
-    # All users for detailed viewing
-    all_users = User.query.all()
-    
-    return render_template_string(ADMIN_DASHBOARD_HTML,
-                                  users=all_users,
-                                  get_role_name=get_user_role_name,
-                                  total_users=total_users,
-                                  total_students=total_students,
-                                  total_teachers=total_teachers,
-                                  total_subjects=total_subjects)
-
-@app.route('/admin/delete_data', methods=['POST'])
-def admin_delete_data():
-    user = get_current_user()
-    if not user or user.role != User.ADMIN:
-        flash('Access denied.', 'error')
-        return redirect(url_for('index'))
-    
-    confirm = request.form.get('confirm')
-    
-    if confirm == 'CONFIRM DELETE':
-        try:
-            # Delete all attendance records
-            db.session.query(Attendance).delete()
-            db.session.commit()
-            flash('SUCCESS: All attendance records have been permanently deleted.', 'success')
-        except Exception as e:
-            db.session.rollback()
-            flash(f'ERROR: Could not delete data: {e}', 'error')
+        if latest_attendance:
+            data = []
+            for rec in latest_attendance:
+                data.append({
+                    'Enrollment': rec.student.enrollment_number,
+                    'Name': rec.student.full_name,
+                    'Punch In': rec.punch_in_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'Punch Out': rec.punch_out_time.strftime('%Y-%m-%d %H:%M:%S') if rec.punch_out_time else 'N/A',
+                    'Status': rec.status
+                })
+            df = pd.DataFrame(data)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("📝 No attendance records for the latest session.")
     else:
-        flash('Deletion failed. Confirmation phrase was incorrect.', 'error')
+        st.info("📝 No class sessions recorded yet.")
+    
+    # Download Report
+    st.divider()
+    if st.button("📥 Download Attendance Report (CSV)", use_container_width=False):
+        records = session.query(Attendance).filter_by(subject_id=user.subject_id).all()
+        
+        if records:
+            data = []
+            for rec in records:
+                data.append({
+                    'Date': rec.punch_in_time.strftime('%Y-%m-%d'),
+                    'Subject Code': user.subject.code,
+                    'Enrollment': rec.student.enrollment_number,
+                    'Student Name': rec.student.full_name,
+                    'Punch In': rec.punch_in_time.strftime('%H:%M:%S'),
+                    'Punch Out': rec.punch_out_time.strftime('%H:%M:%S') if rec.punch_out_time else 'N/A',
+                    'Status': rec.status
+                })
+            
+            df = pd.DataFrame(data)
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="💾 Download CSV",
+                data=csv,
+                file_name=f"attendance_report_{user.subject.code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.warning("⚠️ No attendance records to download.")
 
-    return redirect(url_for('admin_dashboard'))
+def admin_dashboard():
+    user = session.query(User).get(st.session_state.user_id)
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("👨‍💼 Admin Panel")
+        st.write(f"**Name:** {user.full_name}")
+        st.write(f"**ID:** {user.enrollment_number}")
+        st.divider()
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.page = 'login'
+            st.rerun()
+    
+    # Main content
+    st.markdown('<h1 class="main-header">🎯 Admin Control Panel</h1>', unsafe_allow_html=True)
+    
+    # System Overview
+    total_users = session.query(User).count()
+    total_students = session.query(User).filter_by(role=User.STUDENT).count()
+    total_teachers = session.query(User).filter_by(role=User.TEACHER).count()
+    total_subjects = session.query(Subject).count()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("👥 Total Users", total_users)
+    with col2:
+        st.metric("👨‍🎓 Students", total_students)
+    with col3:
+        st.metric("👨‍🏫 Teachers", total_teachers)
+    with col4:
+        st.metric("📚 Subjects", total_subjects)
+    
+    # User Management
+    st.subheader("📊 User Management")
+    
+    tab1, tab2, tab3 = st.tabs(["All Users", "Students", "Teachers"])
+    
+    with tab1:
+        all_users = session.query(User).all()
+        data = []
+        for u in all_users:
+            data.append({
+                'ID': u.enrollment_number,
+                'Name': u.full_name,
+                'Role': get_role_name(u.role),
+                'Course/Subject': u.course if u.role == User.STUDENT else (u.subject.name if u.subject else 'N/A')
+            })
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    
+    with tab2:
+        students = session.query(User).filter_by(role=User.STUDENT).all()
+        data = []
+        for s in students:
+            data.append({
+                'Enrollment': s.enrollment_number,
+                'Name': s.full_name,
+                'Course': s.course,
+                'Branch': s.branch,
+                'Batch': s.batch,
+                'Contact': s.contact_no or 'N/A'
+            })
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    
+    with tab3:
+        teachers = session.query(User).filter_by(role=User.TEACHER).all()
+        data = []
+        for t in teachers:
+            data.append({
+                'ID': t.enrollment_number,
+                'Name': t.full_name,
+                'Subject': t.subject.name if t.subject else 'N/A',
+                'Branch': t.subject.branch if t.subject else 'N/A'
+            })
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    
+    # Attendance Management
+    st.subheader("🗑️ Attendance Data Management")
+    st.warning("⚠️ **Danger Zone**: The following action is irreversible!")
+    
+    with st.form("delete_form"):
+        st.write("Delete all attendance records from the system.")
+        confirm = st.text_input("Type 'CONFIRM DELETE' to proceed", placeholder="Type here...")
+        
+        if st.form_submit_button("🗑️ Permanently Delete All Attendance Data", type="primary"):
+            if confirm == 'CONFIRM DELETE':
+                try:
+                    session.query(Attendance).delete()
+                    session.commit()
+                    st.success("✅ All attendance records have been permanently deleted.")
+                    st.rerun()
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"❌ Error deleting data: {e}")
+            else:
+                st.error("❌ Deletion failed. Confirmation phrase was incorrect.")
+    
+    # Statistics
+    st.subheader("📈 System Statistics")
+    
+    total_attendance = session.query(Attendance).count()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"📊 **Total Attendance Records:** {total_attendance}")
+    with col2:
+        if total_attendance > 0:
+            present_count = session.query(Attendance).filter_by(status='Present').count()
+            st.info(f"✅ **Present Records:** {present_count} ({(present_count/total_attendance)*100:.2f}%)")
 
+# Main Navigation
+def main():
+    if not st.session_state.logged_in:
+        if st.session_state.page == 'login':
+            login_page()
+        elif st.session_state.page == 'register_select':
+            register_select_page()
+        elif st.session_state.page == 'register_student':
+            register_page(User.STUDENT)
+        elif st.session_state.page == 'register_teacher':
+            register_page(User.TEACHER)
+    else:
+        if st.session_state.user_role == User.STUDENT:
+            student_dashboard()
+        elif st.session_state.user_role == User.TEACHER:
+            teacher_dashboard()
+        elif st.session_state.user_role == User.ADMIN:
+            admin_dashboard()
 
-# --- 6. RUN THE APP ---
 if __name__ == '__main__':
-    # Initialize the database and seed initial data
-    with app.app_context():
-        create_db_and_seed()
-    # Run the application
-    app.run(debug=True)
+    main()
